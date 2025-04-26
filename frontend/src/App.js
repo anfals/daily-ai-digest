@@ -1,23 +1,246 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
+import DigestDisplay from "./DigestDisplay";
 
 function App() {
   const [topic, setTopic] = useState("");
   const [phone, setPhone] = useState("");
   const [status, setStatus] = useState("");
+  const [articles, setArticles] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [showResults, setShowResults] = useState(false);
+  const [currentPage, setCurrentPage] = useState(1);
+  const articlesPerPage = 6;
+  const [aiDigest, setAiDigest] = useState(null);
+
+  // Load fashion news on initial page load
+  useEffect(() => {
+    fetchFashionNews();
+  }, []);
+
+  const fetchFashionNews = async () => {
+    try {
+      // Set a timeout to handle network errors
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 30000); // Increased timeout to 30 seconds
+      
+      // Retry mechanism
+      let retries = 2;
+      let response;
+      
+      while (retries >= 0) {
+        try {
+          response = await fetch("http://localhost:8000/api/fashion-news", {
+            signal: controller.signal
+          });
+          
+          // If successful, break out of the retry loop
+          if (response.ok) break;
+          
+          // If not success but not a server error, also break
+          if (response.status < 500) break;
+          
+          // Otherwise, retry server errors
+          retries--;
+          if (retries >= 0) {
+            // Wait for 1 second before retrying
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            console.log(`Retrying fashion news request, ${retries} retries left`);
+          }
+        } catch (e) {
+          // Network error occurred, retry if we have retries left
+          retries--;
+          if (retries < 0) throw e; // re-throw if no more retries
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          console.log(`Network error in fashion news, retrying. ${retries} retries left`);
+        }
+      }
+      
+      clearTimeout(timeoutId);
+      
+      if (!response.ok) {
+        throw new Error(`HTTP error! Status: ${response.status}`);
+      }
+      
+      const data = await response.json();
+      
+      if (data && data.articles) {
+        setArticles(data.articles);
+        setShowResults(true);
+      } else {
+        console.error("Invalid response format:", data);
+        setArticles([]);
+      }
+    } catch (error) {
+      console.error("Error fetching fashion news:", error);
+      // Don't show results section if there was an error
+      setShowResults(false);
+    }
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     setStatus("Sending...");
-    const resp = await fetch("http://localhost:8000/api/digest", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ topic, phone_number: phone })
-    });
-    const data = await resp.json();
-    if (data.status === "digest_sent" || data.status === "received") {
-      setStatus("Request received! You'll get a text soon.");
-    } else {
-      setStatus("Error. Try again.");
+    setLoading(true);
+    setAiDigest(null); // Reset AI digest
+    
+    try {
+      // Set a timeout to handle network errors, much longer for AI processing
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 90000); // 90 seconds timeout for AI processing
+      
+      // Retry mechanism
+      let retries = 2;
+      let resp;
+      
+      while (retries >= 0) {
+        try {
+          resp = await fetch("http://localhost:8000/api/digest", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ 
+              topic, 
+              phone_number: phone,
+              generate_ai_digest: true // Request AI digest
+            }),
+            signal: controller.signal
+          });
+          
+          // If successful, break out of the retry loop
+          if (resp.ok) break;
+          
+          // If not success but not a server error, also break (client errors shouldn't be retried)
+          if (resp.status < 500) break;
+          
+          // Otherwise, retry server errors
+          retries--;
+          if (retries >= 0) {
+            // Wait for 1 second before retrying
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            console.log(`Retrying request, ${retries} retries left`);
+          }
+        } catch (e) {
+          // Network error occurred, retry if we have retries left
+          retries--;
+          if (retries < 0) throw e; // re-throw if no more retries
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          console.log(`Network error, retrying. ${retries} retries left`);
+        }
+      }
+      
+      clearTimeout(timeoutId);
+      
+      if (!resp.ok) {
+        throw new Error(`HTTP error! Status: ${resp.status}`);
+      }
+      
+      const data = await resp.json();
+      
+      if (data && (data.status === "digest_sent" || data.status === "received")) {
+        setStatus("Request received! You'll get a text soon.");
+        
+        // Handle articles
+        if (data.articles && Array.isArray(data.articles)) {
+          setArticles(data.articles);
+          setShowResults(true);
+          setCurrentPage(1); // Reset to first page when searching new topic
+        } else {
+          console.error("Invalid articles format:", data.articles);
+          setArticles([]);
+          setShowResults(false);
+        }
+        
+        // Handle AI digest if available
+        if (data.ai_digest) {
+          setAiDigest(data.ai_digest);
+        } else if (data.digest) {
+          // If no structured AI digest but there's a text digest, use that
+          setAiDigest({ digest: data.digest });
+        }
+      } else {
+        setStatus(data && data.error ? `Error: ${data.error}` : "Error. Try again.");
+      }
+    } catch (error) {
+      console.error("Error submitting request:", error);
+      setStatus("Network error. Please try again.");
+      setShowResults(false);
+    } finally {
+      setLoading(false);
+    }
+  };
+  
+  // Get current articles for pagination
+  const indexOfLastArticle = currentPage * articlesPerPage;
+  const indexOfFirstArticle = indexOfLastArticle - articlesPerPage;
+  const currentArticles = articles && articles.length > 0 ? articles.slice(indexOfFirstArticle, indexOfLastArticle) : [];
+  const totalPages = articles && articles.length > 0 ? Math.ceil(articles.length / articlesPerPage) : 0;
+
+  // Change page
+  const paginate = (pageNumber) => setCurrentPage(pageNumber);
+  
+  // Go to previous page
+  const goToPreviousPage = () => {
+    if (currentPage > 1) {
+      setCurrentPage(currentPage - 1);
+    }
+  };
+  
+  // Go to next page
+  const goToNextPage = () => {
+    if (currentPage < totalPages) {
+      setCurrentPage(currentPage + 1);
+    }
+  };
+
+  const formatDate = (dateString) => {
+    if (!dateString) return "";
+    
+    try {
+      const date = new Date(dateString);
+      return date.toLocaleDateString("en-US", {
+        year: 'numeric',
+        month: 'short',
+        day: 'numeric'
+      });
+    } catch (e) {
+      return "";
+    }
+  };
+  
+  const formatTimeAgo = (dateString) => {
+    if (!dateString) return "";
+    
+    try {
+      const publishedDate = new Date(dateString);
+      const now = new Date();
+      
+      // Calculate time difference in milliseconds
+      const timeDiff = now - publishedDate;
+      
+      // Convert to hours
+      const hoursDiff = Math.floor(timeDiff / (1000 * 60 * 60));
+      
+      if (hoursDiff < 1) {
+        // Less than an hour ago
+        const minutesDiff = Math.floor(timeDiff / (1000 * 60));
+        return `${minutesDiff} minute${minutesDiff !== 1 ? 's' : ''} ago`;
+      } else if (hoursDiff < 24) {
+        // Less than a day ago
+        return `${hoursDiff} hour${hoursDiff !== 1 ? 's' : ''} ago`;
+      } else if (hoursDiff < 48) {
+        // Less than 2 days ago
+        return 'Yesterday';
+      } else {
+        // More than 2 days ago - return formatted date
+        const daysDiff = Math.floor(hoursDiff / 24);
+        if (daysDiff < 7) {
+          return `${daysDiff} day${daysDiff !== 1 ? 's' : ''} ago`;
+        } else {
+          return formatDate(dateString);
+        }
+      }
+    } catch (e) {
+      console.error("Error formatting time ago:", e);
+      return "";
     }
   };
 
@@ -26,7 +249,7 @@ function App() {
       <header>
         <div className="logo">
           <span className="logo-icon">📰</span>
-          <h1>Cascade Digest</h1>
+          <h1>M.A.D</h1>
         </div>
         <nav>
           <ul>
@@ -77,8 +300,8 @@ function App() {
                 <small>We'll text your digest to this number</small>
               </div>
               
-              <button type="submit" className="submit-button">
-                Get My Digest <span className="arrow">→</span>
+              <button type="submit" className="submit-button" disabled={loading}>
+                {loading ? "Loading..." : "Get My Digest"} {!loading && <span className="arrow">→</span>}
               </button>
             </form>
             
@@ -87,6 +310,87 @@ function App() {
             </div>
           </div>
         </section>
+
+        {showResults && (
+          <section className="results-section">
+            {/* AI Digest Display */}
+            {aiDigest && <DigestDisplay aiDigest={aiDigest} />}
+            
+            {/* Articles Display */}
+            {articles.length > 0 && (
+              <>
+                <h2>Top News Articles</h2>
+                <div className="results-info">
+                  <p>Found {articles.length} articles. Showing page {currentPage} of {totalPages}.</p>
+                </div>
+                <div className="results-container">
+                  {currentArticles && currentArticles.length > 0 ? (
+                    currentArticles.map((article, index) => (
+                      <div className="article-card" key={index}>
+                        <h3>
+                          <a href={article.link} target="_blank" rel="noopener noreferrer">
+                            {article.title || "No Title Available"}
+                          </a>
+                        </h3>
+                        <div className="article-meta">
+                          {article.source && <span className="article-source">{article.source}</span>}
+                          {article.published && (
+                            <span className="article-date" title={formatDate(article.published)}>
+                              <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="clock-icon">
+                                <circle cx="12" cy="12" r="10" />
+                                <polyline points="12 6 12 12 16 14" />
+                              </svg>
+                              {formatTimeAgo(article.published)}
+                            </span>
+                          )}
+                        </div>
+                        <p className="article-snippet">{article.snippet || "No preview available"}</p>
+                        <a href={article.link} className="read-more" target="_blank" rel="noopener noreferrer">
+                          Read full article
+                        </a>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="no-results">Loading articles...</div>
+                  )}
+                </div>
+                
+                {/* Pagination */}
+                {totalPages > 1 && (
+                  <div className="pagination">
+                    <button 
+                      onClick={goToPreviousPage} 
+                      disabled={currentPage === 1}
+                      className={`pagination-button ${currentPage === 1 ? 'disabled' : ''}`}
+                    >
+                      Previous
+                    </button>
+                    
+                    <div className="pagination-numbers">
+                      {[...Array(totalPages).keys()].map(number => (
+                        <button
+                          key={number + 1}
+                          onClick={() => paginate(number + 1)}
+                          className={`pagination-number ${currentPage === number + 1 ? 'active' : ''}`}
+                        >
+                          {number + 1}
+                        </button>
+                      ))}
+                    </div>
+                    
+                    <button 
+                      onClick={goToNextPage} 
+                      disabled={currentPage === totalPages}
+                      className={`pagination-button ${currentPage === totalPages ? 'disabled' : ''}`}
+                    >
+                      Next
+                    </button>
+                  </div>
+                )}
+              </>
+            )}
+          </section>
+        )}
 
         <section className="features">
           <div className="feature">
@@ -112,7 +416,7 @@ function App() {
           <h2>What Our Users Say</h2>
           <div className="testimonial-container">
             <div className="testimonial">
-              <p>"Cascade Digest has completely changed how I consume news. No more information overload!"</p>
+              <p>"M.A.D has completely changed how I consume news. No more information overload!"</p>
               <div className="testimonial-author">— Sarah K., Journalist</div>
             </div>
             <div className="testimonial">
@@ -127,9 +431,9 @@ function App() {
         <div className="footer-content">
           <div className="footer-logo">
             <span className="logo-icon">📰</span>
-            <h2>Cascade Digest</h2>
+            <h2>M.A.D</h2>
           </div>
-          <p>&copy; {new Date().getFullYear()} Cascade Digest. All rights reserved.</p>
+          <p>&copy; {new Date().getFullYear()} M.A.D. All rights reserved.</p>
         </div>
       </footer>
     </div>
