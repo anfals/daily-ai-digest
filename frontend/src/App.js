@@ -1,9 +1,30 @@
 import React, { useState, useEffect } from "react";
 import DigestDisplay from "./DigestDisplay";
 
+// News Anchor Loading Animation Component
+function NewsAnchorLoading() {
+  return (
+    <div className="news-anchor-loading">
+      <div className="news-desk"></div>
+      <div className="news-anchor">
+        <div className="head"></div>
+        <div className="body"></div>
+        <div className="microphone"></div>
+      </div>
+      <div className="loading-text">
+        <span>Gathering News</span>
+        <span className="dots">
+          <span className="dot">.</span>
+          <span className="dot">.</span>
+          <span className="dot">.</span>
+        </span>
+      </div>
+    </div>
+  );
+}
+
 function App() {
   const [topic, setTopic] = useState("");
-  const [phone, setPhone] = useState("");
   const [status, setStatus] = useState("");
   const [articles, setArticles] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -20,7 +41,7 @@ function App() {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    setStatus("Sending...");
+    setStatus("Analyzing news sources...");
     setLoading(true);
     setAiDigest(null); // Reset AI digest
     
@@ -39,8 +60,7 @@ function App() {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ 
-              topic, 
-              phone_number: phone,
+              topic,
               generate_ai_digest: true // Request AI digest
             }),
             signal: controller.signal
@@ -76,8 +96,8 @@ function App() {
       
       const data = await resp.json();
       
-      if (data && (data.status === "digest_sent" || data.status === "received")) {
-        setStatus("Request received! You'll get a text soon.");
+      if (data && (data.status === "digest_generated" || data.status === "digest_sent" || data.status === "received")) {
+        setStatus("Digest generated successfully!");
         
         // Handle articles
         if (data.articles && Array.isArray(data.articles)) {
@@ -239,21 +259,9 @@ function App() {
                 />
               </div>
               
-              <div className="input-group">
-                <label htmlFor="phone">Phone Number</label>
-                <input
-                  id="phone"
-                  type="tel"
-                  value={phone}
-                  onChange={e => setPhone(e.target.value)}
-                  placeholder="+1 (555) 123-4567"
-                  required
-                />
-                <small>We'll text your digest to this number</small>
-              </div>
               
               <button type="submit" className="submit-button" disabled={loading}>
-                {loading ? "Loading..." : "Get My Digest"} {!loading && <span className="arrow">→</span>}
+                {!loading ? "Get My Digest" : "Processing"} {!loading && <span className="arrow">→</span>}
               </button>
             </form>
             
@@ -263,13 +271,18 @@ function App() {
           </div>
         </section>
 
-        {showResults && (
+        {loading ? (
           <section className="results-section">
-            {/* AI Digest Display */}
-            {aiDigest && <DigestDisplay aiDigest={aiDigest} />}
-            
-            {/* Articles Display */}
-            {articles.length > 0 && (
+            <NewsAnchorLoading />
+          </section>
+        ) : (
+          showResults && (
+            <section className="results-section">
+              {/* AI Digest Display */}
+              {aiDigest && <DigestDisplay aiDigest={aiDigest} />}
+              
+              {/* Articles Display */}
+              {articles.length > 0 && (
               <>
                 <h2>Top News Articles</h2>
                 <div className="results-info">
@@ -341,7 +354,8 @@ function App() {
                 )}
               </>
             )}
-          </section>
+            </section>
+          )
         )}
 
         <section className="features">
