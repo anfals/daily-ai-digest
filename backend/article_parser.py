@@ -12,7 +12,7 @@ class ArticleParser:
     """
     
     @staticmethod
-    def fetch_article_content(url: str, timeout: int = 10) -> Optional[str]:
+    def fetch_article_content(url: str, timeout: int = 20) -> Optional[str]:
         """
         Fetches and extracts the main content from an article URL
         """
@@ -22,7 +22,37 @@ class ArticleParser:
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
             }
             
-            response = requests.get(url, headers=headers, timeout=timeout)
+            # Add retry logic
+            max_retries = 2
+            retry_count = 0
+            
+            while retry_count <= max_retries:
+                try:
+                    response = requests.get(url, headers=headers, timeout=timeout)
+                    
+                    if response.status_code == 200:
+                        break  # Success
+                    elif response.status_code >= 500:
+                        # Server error, retry
+                        retry_count += 1
+                        if retry_count <= max_retries:
+                            print(f"Server error fetching {url}: Status {response.status_code}, retrying ({retry_count}/{max_retries})")
+                            time.sleep(1)  # Wait a bit before retrying
+                        else:
+                            print(f"Max retries reached for {url}")
+                            break
+                    else:
+                        # Client error or redirect, don't retry
+                        print(f"Error fetching article {url}: Status code {response.status_code}")
+                        break
+                except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+                    retry_count += 1
+                    if retry_count <= max_retries:
+                        print(f"Request timeout/connection error for {url}, retrying ({retry_count}/{max_retries}): {str(e)}")
+                        time.sleep(1)
+                    else:
+                        print(f"Max retries reached for {url}")
+                        raise
             
             if response.status_code != 200:
                 print(f"Error fetching article {url}: Status code {response.status_code}")
@@ -80,9 +110,12 @@ class ArticleParser:
             return f"Error processing article: {str(e)}"
 
     @staticmethod
-    def fetch_multiple_articles(articles: List[Dict[str, Any]], max_workers: int = 5) -> List[Dict[str, Any]]:
+    def fetch_multiple_articles(articles: List[Dict[str, Any]], max_workers: int = 3) -> List[Dict[str, Any]]:
         """
         Fetches content for multiple articles in parallel
+        
+        Reduced default max_workers to 3 to prevent overwhelming external servers
+        and reduce chances of network errors
         """
         articles_with_content = []
         

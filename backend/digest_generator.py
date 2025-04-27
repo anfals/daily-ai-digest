@@ -29,14 +29,22 @@ class DigestGenerator:
         try:
             # Prepare the articles data for Claude
             articles_data = []
+            
+            # Check if there's a system message indicating no articles found
+            has_system_message = any(article.get("source") == "System Message" for article in articles)
+            
             for i, article in enumerate(articles, 1):
+                # If this is a system message, mark it clearly for Claude
+                is_system_message = article.get("source") == "System Message"
+                
                 article_info = {
                     "id": i,
                     "title": article.get("title", "No title"),
                     "source": article.get("source", "Unknown source"),
                     "url": article.get("link", ""),
                     "snippet": article.get("snippet", ""),
-                    "content": article.get("content", "No content available")[:5000]  # Limit content length
+                    "content": article.get("content", "No content available")[:5000],  # Limit content length
+                    "is_system_message": is_system_message
                 }
                 articles_data.append(article_info)
                 
@@ -54,10 +62,12 @@ class DigestGenerator:
 
                 IMPORTANT RULES:
                 1. Only select articles in English
-                2. Provide a 2-3 line detailed summary for each article that captures the key information
-                3. Focus on the most important, timely, and relevant articles
-                4. Ensure your article digests are informative enough that someone could understand the main points without reading the full article
-                5. Check the article publication dates and prefer more recent articles when relevant""",
+                2. SELECT THE 5 BEST ARTICLES THAT COVER DIFFERENT ASPECTS OF THE TOPIC to ensure diverse coverage
+                3. Provide a 4-5 sentence detailed summary of each article's key points that captures the most important information
+                4. Focus on the most important, timely, and relevant articles from the last 24-48 hours
+                5. Ensure your article digests are informative enough that someone could understand the main points without reading the full article
+                6. Check the article publication dates and prefer more recent articles when relevant
+                7. Select articles from different sources when possible to provide varied perspectives""",
                 messages=[
                     {"role": "user", "content": prompt}
                 ]
@@ -82,6 +92,40 @@ class DigestGenerator:
     def _construct_prompt(self, topic: str, articles: List[Dict[str, Any]]) -> str:
         """Create a prompt for Claude to generate a structured summary with article highlights"""
         
+        # Check if we have any real articles or only system messages
+        real_articles = [a for a in articles if not a.get('is_system_message', False)]
+        
+        # If there are only system messages, create a different prompt
+        if not real_articles:
+            system_message = articles[0]  # Get the first system message
+            
+            prompt = f"""# Task: Create a Response About Missing Articles on "{topic}"
+
+I attempted to find news articles on "{topic}" but the search did not return any relevant results.
+
+## Your Task:
+Create a helpful response that:
+1. Acknowledges that no articles were found
+2. Explains possible reasons (topic might be too specific, no recent developments, etc.)
+3. Suggests alternative approaches the user might take
+
+Use the following system message as guidance:
+Title: {system_message['title']}
+Content: {system_message['content']}
+
+Please format your response with:
+
+<overall_summary>
+A 3-4 sentence explanation that there were no articles found and suggestions for the user.
+</overall_summary>
+
+<article_highlights>
+A brief note that no article highlights are available due to lack of search results.
+</article_highlights>
+"""
+            return prompt
+        
+        # Normal prompt for when we have articles
         prompt = f"""# Task: Create a Structured News Summary on "{topic}"
 
 I'm providing you with {len(articles)} news articles related to {topic}.
@@ -98,6 +142,24 @@ I'm providing you with {len(articles)} news articles related to {topic}.
 """
 
         for article in articles:
+            # Check if this is a system message
+            if article.get('is_system_message', False):
+                prompt += f"""
+----- Article {article['id']} (SYSTEM MESSAGE) -----
+Title: {article['title']}
+Source: {article['source']}
+URL: {article['url']}
+Snippet: {article['snippet']}
+
+Content:
+{article['content']}
+
+NOTE: This is a system-generated message, not an actual news article. Only use this if no other relevant articles are available.
+----------------------
+"""
+                continue
+                
+            # Regular article formatting
             # Include publication date in the prompt if available
             pub_date = ""
             if 'published' in article and article['published']:

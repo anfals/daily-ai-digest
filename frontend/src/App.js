@@ -12,70 +12,11 @@ function App() {
   const articlesPerPage = 6;
   const [aiDigest, setAiDigest] = useState(null);
 
-  // Load fashion news on initial page load
+  // No initial data loading on page load
   useEffect(() => {
-    fetchFashionNews();
+    // Initialize the UI without pre-loading data
+    setShowResults(false);
   }, []);
-
-  const fetchFashionNews = async () => {
-    try {
-      // Set a timeout to handle network errors
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 30000); // Increased timeout to 30 seconds
-      
-      // Retry mechanism
-      let retries = 2;
-      let response;
-      
-      while (retries >= 0) {
-        try {
-          response = await fetch("http://localhost:8000/api/fashion-news", {
-            signal: controller.signal
-          });
-          
-          // If successful, break out of the retry loop
-          if (response.ok) break;
-          
-          // If not success but not a server error, also break
-          if (response.status < 500) break;
-          
-          // Otherwise, retry server errors
-          retries--;
-          if (retries >= 0) {
-            // Wait for 1 second before retrying
-            await new Promise(resolve => setTimeout(resolve, 1000));
-            console.log(`Retrying fashion news request, ${retries} retries left`);
-          }
-        } catch (e) {
-          // Network error occurred, retry if we have retries left
-          retries--;
-          if (retries < 0) throw e; // re-throw if no more retries
-          await new Promise(resolve => setTimeout(resolve, 1000));
-          console.log(`Network error in fashion news, retrying. ${retries} retries left`);
-        }
-      }
-      
-      clearTimeout(timeoutId);
-      
-      if (!response.ok) {
-        throw new Error(`HTTP error! Status: ${response.status}`);
-      }
-      
-      const data = await response.json();
-      
-      if (data && data.articles) {
-        setArticles(data.articles);
-        setShowResults(true);
-      } else {
-        console.error("Invalid response format:", data);
-        setArticles([]);
-      }
-    } catch (error) {
-      console.error("Error fetching fashion news:", error);
-      // Don't show results section if there was an error
-      setShowResults(false);
-    }
-  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -161,7 +102,18 @@ function App() {
       }
     } catch (error) {
       console.error("Error submitting request:", error);
-      setStatus("Network error. Please try again.");
+      
+      // Provide more specific error messages
+      if (error.name === 'AbortError') {
+        setStatus("Request timed out. The server might be busy processing other requests. Please try again.");
+      } else if (error.message.includes('NetworkError') || error.message.includes('Failed to fetch')) {
+        setStatus("Network error. Please check your connection and try again.");
+      } else if (error.message.includes('Status: 5')) {
+        setStatus("Server error. Our team has been notified. Please try again in a few minutes.");
+      } else {
+        setStatus("Error processing your request. Please try again.");
+      }
+      
       setShowResults(false);
     } finally {
       setLoading(false);
@@ -265,7 +217,7 @@ function App() {
         <section className="hero">
           <div className="hero-content">
             <h2>Stay Informed, <span className="highlight">Effortlessly</span></h2>
-            <p>Get personalized news digests delivered straight to your phone. No more endless scrolling, just the news that matters to you.</p>
+            <p>Get personalized news digests on any topic delivered straight to your phone. Enter a topic below to see relevant articles and summaries.</p>
           </div>
 
           <div className="form-container">
@@ -282,7 +234,7 @@ function App() {
                   type="text"
                   value={topic}
                   onChange={e => setTopic(e.target.value)}
-                  placeholder="E.g., Technology, Sports, Politics"
+                  placeholder="E.g., Technology, Ukraine, Climate Change, AI"
                   required
                 />
               </div>

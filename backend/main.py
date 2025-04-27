@@ -89,8 +89,15 @@ def search_google_news(query: str, num_results: int = 5) -> List[Article]:
         if num_results <= 0 or num_results > 20:
             num_results = 10  # Fallback to a reasonable default
         
-        # Append "news" to the query to prioritize news articles
-        search_query = f"{query} news"
+        # Make direct queries without modifications for specific topics
+        specific_topics = ["pope", "vatican", "catholic", "catholicism", "papacy"]
+        if any(topic.lower() in query.lower() for topic in specific_topics):
+            # For these topics, use the query directly without modification
+            search_query = query
+            print(f"Using direct query for specific topic: {search_query}")
+        else:
+            # Append "news" to the query to prioritize news articles for other topics
+            search_query = f"{query} news"
         
         # Google Search API URL
         url = "https://www.googleapis.com/customsearch/v1"
@@ -112,13 +119,42 @@ def search_google_news(query: str, num_results: int = 5) -> List[Article]:
             if start_index > 1:
                 params["start"] = start_index
             
-            # Make the request with timeout
-            response = requests.get(url, params=params, timeout=10)
+            # Make the request with timeout and retries
+            max_retries = 2
+            retry_count = 0
+            success = False
             
-            # Check if request was successful
-            if response.status_code != 200:
-                print(f"Error searching Google: {response.status_code}")
-                print(response.text)
+            while retry_count <= max_retries and not success:
+                try:
+                    response = requests.get(url, params=params, timeout=15)
+                    
+                    # Check if request was successful
+                    if response.status_code == 200:
+                        success = True
+                    elif response.status_code >= 500:  # Server error
+                        retry_count += 1
+                        if retry_count <= max_retries:
+                            print(f"Server error from Google API: {response.status_code}, retrying ({retry_count}/{max_retries})")
+                            time.sleep(1)  # Wait before retrying
+                        else:
+                            print(f"Max retries reached for Google API request")
+                            break
+                    else:  # Client error or other
+                        print(f"Error searching Google: {response.status_code}")
+                        print(response.text)
+                        break
+                except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+                    retry_count += 1
+                    if retry_count <= max_retries:
+                        print(f"Request timeout/connection error for Google API, retrying ({retry_count}/{max_retries}): {str(e)}")
+                        time.sleep(1)
+                    else:
+                        print(f"Max retries reached for Google API request")
+                        raise
+            
+            # If all retries failed, skip this batch
+            if not success:
+                print("Failed to get response from Google API, skipping this batch")
                 break
             
             # Parse the response
@@ -171,6 +207,181 @@ def search_google_news(query: str, num_results: int = 5) -> List[Article]:
         print(f"Unexpected error searching Google: {str(e)}")
         return []
 
+def generate_search_queries(topic: str) -> List[str]:
+    """
+    Uses Claude to generate optimized search queries for a given topic.
+    Returns a list of 5 search queries designed to find diverse, recent, and relevant articles.
+    """
+    # If Claude client is not available, use default queries
+    if not claude_client:
+        print("Claude client not available, using default queries")
+        return [f"{topic} latest news", f"{topic} recent events", f"{topic} today", f"{topic} updates", f"{topic} current"]
+    
+    try:
+        # Create a prompt for Claude to generate diverse search queries
+        prompt = f"""# Task: Generate Optimized News Search Queries
+
+I need to find the most relevant and recent news articles about "{topic}".
+
+Please generate 5 specific search queries that would help me find:
+1. The latest breaking news on this topic
+2. The most trending or popular coverage
+3. In-depth analyses or comprehensive coverage
+4. Different perspectives or angles on the topic
+5. Specific developments or key aspects of the topic
+
+Your queries should:
+- Be specific and targeted to yield high-quality news results
+- Focus on articles from the past 24 hours for maximum freshness
+- Be optimized for news search engines
+- Include relevant keywords, names, events, or specifications related to {topic}
+- Enable finding diverse information covering different aspects of the topic
+- Each query should target a different aspect to avoid duplicate coverage
+- Aim to find English-language content
+- DO NOT include phrases like "last 24 hours" or "recent" in the queries themselves, as these don't work well with search engines
+- Make queries direct and simple, focusing on the subject matter itself
+
+Format your response as a numbered list of 5 queries, one per line.
+"""
+
+        # Call Claude API to generate queries
+        response = claude_client.messages.create(
+            model="claude-3-7-sonnet-20250219",
+            max_tokens=1000,
+            temperature=0.3,
+            system="You are a professional search query optimizer specializing in finding recent, relevant news articles.",
+            messages=[
+                {"role": "user", "content": prompt}
+            ]
+        )
+        
+        # Extract the response text
+        result = response.content[0].text
+        
+        # Parse the queries from the response
+        queries = []
+        lines = result.strip().split('\n')
+        for line in lines:
+            # Match numbered lines (e.g. "1. " or "1) ")
+            if re.match(r'^\d+[\.\)]\s+', line):
+                # Extract the query part (after the number and space)
+                query = re.sub(r'^\d+[\.\)]\s+', '', line).strip()
+                if query:
+                    queries.append(query)
+        
+        # Ensure we have at most 5 queries
+        if not queries:
+            print("Failed to parse any queries from Claude's response, using default queries")
+            return [f"{topic} latest news", f"{topic} analysis", f"{topic} developments", f"{topic} trends", f"{topic} impact"]
+            
+        print(f"Generated {len(queries)} search queries for topic '{topic}': {queries}")
+        return queries[:5]
+        
+    except Exception as e:
+        print(f"Error generating search queries with Claude: {str(e)}")
+        # Return default queries if Claude fails
+        return [f"{topic} latest news", f"{topic} analysis", f"{topic} developments", f"{topic} trends", f"{topic} impact"]
+
+def search_with_optimized_queries(topic: str) -> List[Dict[str, Any]]:
+    """
+    Uses Claude to generate optimized search queries, then executes each query
+    to gather articles, and returns the collected articles.
+    """
+    try:
+        # Generate optimized queries using Claude
+        print(f"Generating optimized search queries for topic: {topic}")
+        queries = generate_search_queries(topic)
+        print(f"Generated {len(queries)} optimized queries for topic '{topic}': {queries}")
+        
+        # Execute each query and collect results
+        all_articles = []
+        seen_urls = set()  # Track URLs to avoid duplicates
+        
+        # First attempt with optimized queries
+        for query in queries:
+            print(f"Executing query: {query}")
+            # Get up to 5 articles per query
+            results = search_google_news(query, 5)
+            
+            if results:
+                for article in results:
+                    # Avoid adding duplicate articles
+                    if article.link not in seen_urls:
+                        seen_urls.add(article.link)
+                        all_articles.append(article.to_dict())
+                        
+                print(f"Found {len(results)} articles for query: {query}")
+            else:
+                print(f"No results found for query: {query}")
+                
+        print(f"Total unique articles collected from optimized queries: {len(all_articles)}")
+        
+        # If we didn't find any articles with optimized queries, try direct search
+        if not all_articles:
+            print(f"No articles found with optimized queries, trying direct search")
+            # Try alternate search strategies if we got no results
+            direct_query = f"{topic}"
+            print(f"Trying direct query: {direct_query}")
+            direct_results = search_google_news(direct_query, 10)
+            
+            if direct_results:
+                for article in direct_results:
+                    if article.link not in seen_urls:
+                        seen_urls.add(article.link)
+                        all_articles.append(article.to_dict())
+            
+            # If still no results, try with "news" added explicitly
+            if not all_articles:
+                news_query = f"{topic} news"
+                print(f"Trying news query: {news_query}")
+                news_results = search_google_news(news_query, 10)
+                
+                if news_results:
+                    for article in news_results:
+                        if article.link not in seen_urls:
+                            seen_urls.add(article.link)
+                            all_articles.append(article.to_dict())
+        
+        print(f"Final total unique articles collected: {len(all_articles)}")
+        
+        # If still no articles, create a mock article with information
+        if not all_articles:
+            print(f"No articles found for {topic} after all search attempts. Creating a mock article.")
+            mock_article = {
+                "title": f"Information about {topic}",
+                "link": f"https://en.wikipedia.org/wiki/{topic.replace(' ', '_')}",
+                "snippet": f"We couldn't find recent news articles specifically about {topic}. This may be because there aren't any recent developments, or the search terms need refinement. Try checking major news outlets directly for information about {topic}.",
+                "source": "System Message",
+                "published": datetime.now().isoformat(),
+                "content": f"No recent articles were found about {topic}. This might be because there are no major recent developments on this topic, or because the search terms need to be more specific. You might try searching directly on major news websites for more information."
+            }
+            all_articles = [mock_article]
+        
+        return all_articles
+        
+    except Exception as e:
+        print(f"Error in search_with_optimized_queries: {str(e)}")
+        # Fall back to direct search
+        print(f"Falling back to direct search for topic: {topic}")
+        try:
+            raw_articles = search_google_news(topic, 20)
+            results = [article.to_dict() for article in raw_articles]
+            if results:
+                return results
+        except:
+            pass
+            
+        # If all fails, return a mock article
+        mock_article = {
+            "title": f"Information about {topic}",
+            "link": f"https://en.wikipedia.org/wiki/{topic.replace(' ', '_')}",
+            "snippet": f"We couldn't find recent news articles specifically about {topic}. This may be because there aren't any recent developments, or due to temporary search issues. Try checking major news outlets directly.",
+            "source": "System Message",
+            "published": datetime.now().isoformat(),
+            "content": f"No recent articles were found about {topic}. This might be because there are no major recent developments on this topic, or because of temporary search issues. You might try searching directly on major news websites for more information."
+        }
+        return [mock_article]
+
 def get_empty_article_response() -> List[Dict[str, Any]]:
     """
     Returns an empty article response for when no articles can be fetched.
@@ -183,24 +394,6 @@ def get_empty_article_response() -> List[Dict[str, Any]]:
         "published": datetime.now().isoformat()
     }]
 
-def fetch_top_fashion_news() -> List[Dict[str, Any]]:
-    """
-    Fetches top 20 fashion news articles using Google Search API.
-    Falls back to empty response if the API fails.
-    """
-    try:
-        articles = search_google_news("top fashion trends", 20)
-        result = [article.to_dict() for article in articles]
-        
-        # If we got no results from the API, return empty response
-        if not result:
-            print("No results from Google API, returning empty response")
-            return get_empty_article_response()
-            
-        return result
-    except Exception as e:
-        print(f"Error fetching fashion news: {str(e)}")
-        return get_empty_article_response()
 
 def format_simple_digest(topic: str, articles: List[Dict[str, Any]]) -> str:
     """Format a simple digest without using AI"""
@@ -237,22 +430,23 @@ async def create_digest(req: DigestRequest):
         if not topic or not phone_number:
             raise HTTPException(status_code=400, detail="Topic and phone number are required")
         
-        # 2. Fetch news articles - default to fashion if no specific topic
-        if topic.lower() in ["fashion", "style", "clothing", "apparel"]:
-            articles = fetch_top_fashion_news()
-        else:
-            try:
+        try:
+            # First, use Claude to generate optimized search queries if available
+            if claude_client:
+                articles = search_with_optimized_queries(topic)
+            else:
+                # Fallback to direct search if Claude is not available
                 raw_articles = search_google_news(topic, 20)
                 articles = [article.to_dict() for article in raw_articles]
-                
-                # If no results found, return empty response
-                if not articles:
-                    print(f"No results found for topic '{topic}', returning empty response")
-                    articles = get_empty_article_response()
-            except Exception as e:
-                print(f"Error searching for topic '{topic}': {str(e)}")
-                
+            
+            # If no results found, return empty response
+            if not articles:
+                print(f"No results found for topic '{topic}', returning empty response")
                 articles = get_empty_article_response()
+        except Exception as e:
+            print(f"Error searching for topic '{topic}': {str(e)}")
+            
+            articles = get_empty_article_response()
         
         # Ensure articles is a valid list
         if articles is None:
@@ -321,22 +515,6 @@ async def create_digest(req: DigestRequest):
         print(f"Unexpected error in create_digest: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
 
-@app.get("/api/fashion-news")
-async def get_fashion_news():
-    """
-    Endpoint to get top 20 fashion news articles.
-    """
-    try:
-        articles = fetch_top_fashion_news()
-        
-        # Ensure articles is a valid list
-        if articles is None:
-            articles = []
-            
-        return {"articles": articles}
-    except Exception as e:
-        print(f"Unexpected error in get_fashion_news: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
 
 @app.get("/api/health")
 async def health():
